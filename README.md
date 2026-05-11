@@ -6,7 +6,7 @@
 [![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-ffdd00?style=flat&logo=buy-me-a-coffee&logoColor=black)](https://buymeacoffee.com/jovd83)
 [![Validate Skill](https://github.com/jovd83/skill-orchestrator/actions/workflows/validate.yml/badge.svg)](https://github.com/jovd83/skill-orchestrator/actions/workflows/validate.yml)
 
-Execution layer atop `skill-dispatcher`. Takes a routing decision and runs the planned sequence end-to-end — with a telemetry event per step and a shared `chain_id` across the entire execution.
+Execution layer atop [skill-dispatcher](https://github.com/jovd83/skill-dispatcher). Takes a routing decision and runs the planned sequence end-to-end — with a telemetry event per step and a shared `chain_id` across the entire execution.
 
 ## Problem it solves
 
