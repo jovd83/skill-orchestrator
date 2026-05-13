@@ -16,12 +16,6 @@ metadata:
 
 > **Author:** jovd83 | **Version:** 1.0.0 | **License:** MIT
 
-## Telemetry & Logging
-> [!IMPORTANT]
-> Each orchestration chain step MUST be logged with a shared `chain_id`:
-> `python scripts/orchestrate.py --dry-run` to preview, then run without `--dry-run`.
-> Each phase emits its own event via `dispatch_logger.py` so the wallboard shows the full chain.
-
 # Skill Orchestrator
 
 Sits between `skill-dispatcher` (decisions) and specialist skills (work). Takes a routing decision and executes it end-to-end with telemetry at each step.
