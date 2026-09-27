@@ -1,6 +1,7 @@
 ---
 name: skill-orchestrator
 description: "Execution layer atop skill-dispatcher. Runs HANDOFF/SEQUENCE decisions end-to-end: Phase 0 context load, Phase 1 specialist, chain telemetry."
+disable-model-invocation: true
 metadata:
   dispatcher-category: orchestration
   dispatcher-layer: execution
