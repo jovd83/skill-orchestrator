@@ -98,7 +98,7 @@ python ../skill-dispatcher/scripts/dispatch_cli.py \
 
 `query_suffix` is injected as a `[CHAIN CONSTRAINT]` block into the sub-skill's prompt — use it for self-gating phases that only apply to certain scenarios.
 
-`mandatory` defaults to `true` when omitted. Mandatory phases stop the chain if they fail, are blocked, or declare themselves not applicable. Optional phases may return `CHAIN_PHASE_STATUS: not_applicable`; the orchestrator logs that terminal status and continues.
+`mandatory` defaults to `true` when omitted. With `orchestrate.py`, mandatory phases stop the chain if they fail, are blocked, or declare themselves not applicable; with `next_phase.py` the agent records the outcome and decides. Optional phases may return `CHAIN_PHASE_STATUS: not_applicable`; the orchestrator logs that terminal status and continues.
 
 ## Security: the allowlist gate
 

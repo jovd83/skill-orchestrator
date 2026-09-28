@@ -93,6 +93,12 @@ def load_skill_md(skill_name: str) -> str:
 
 # ---------- telemetry ----------
 
+# Status to retry with when the installed dispatch_logger rejects the precise one (it may only know
+# success/failed). None means: send no --phase-status, the precise status stays in the reason.
+LOGGER_FALLBACK_STATUS = {"success": "success", "failed": "failed", "blocked": "failed",
+                          "skipped": None, "not_applicable": None}
+
+
 def log_event(
     decision: str,
     skill: str,
@@ -114,18 +120,22 @@ def log_event(
         "--reason", reason,
         "--chain-id", chain_id,
     ]
-    if phase_status:
-        cmd += ["--phase-status", phase_status]
     effective_skills = skills_csv or (skill if decision == "SEQUENCE" else "")
     if effective_skills:
         cmd += ["--skills", effective_skills]
-    try:
-        subprocess.run(
-            cmd, capture_output=True, check=False,
-            env={**os.environ, "SKILL_DISPATCH_DISABLE_WALLBOARD": "1", "SKILL_DISPATCH_CHAIN_ID": chain_id},
-        )
-    except Exception:
-        pass
+    env = {**os.environ, "SKILL_DISPATCH_DISABLE_WALLBOARD": "1", "SKILL_DISPATCH_CHAIN_ID": chain_id}
+    attempts = [cmd + (["--phase-status", phase_status] if phase_status else [])]
+    fallback = LOGGER_FALLBACK_STATUS.get(phase_status)
+    if phase_status and fallback != phase_status:
+        # Older dispatch_logger versions accept fewer statuses; keep the precise one in the reason.
+        retry = [a if a != reason else reason + " phase_status=" + phase_status for a in cmd]
+        attempts.append(retry + (["--phase-status", fallback] if fallback else []))
+    for attempt in attempts:
+        try:
+            if subprocess.run(attempt, capture_output=True, check=False, env=env).returncode == 0:
+                return
+        except Exception:
+            return
 
 
 # ---------- envelope composition ----------
@@ -223,6 +233,31 @@ def build_envelope_for_phase(state: dict[str, Any], chain_def: dict[str, Any]) -
     }
 
 
+def _gate_envelope(state: dict[str, Any], chain_def: dict[str, Any], message: str) -> dict[str, Any]:
+    """Envelope for a pending HITL gate. A gate after the last phase must not finalize the chain:
+    the chain stays open until --approve or --reject."""
+    phases = chain_def["phases"]
+    if state["current_phase_index"] >= len(phases):
+        envelope = {
+            "done": False,
+            "chain_id": state["chain_id"],
+            "chain_name": chain_def.get("chain_name", state["chain_name"]),
+            "phase_index": len(phases),
+            "phase_total": len(phases),
+            "final_gate": True,
+            "skill": None,
+            "agent_handled": True,
+            "system_prompt": "",
+            "user_prompt": "",
+        }
+    else:
+        envelope = build_envelope_for_phase(state, chain_def)
+    envelope["awaiting_approval"] = True
+    envelope["approval_for_phase_index"] = state["current_phase_index"]
+    envelope["approval_message"] = message
+    return envelope
+
+
 def finalize_chain(state: dict[str, Any], _chain_def: dict[str, Any]) -> dict[str, Any]:
     """Mark the chain complete, emit chain_completed log event, regen wallboard, return summary."""
     if state.get("completed_at"):
@@ -246,9 +281,10 @@ def finalize_chain(state: dict[str, Any], _chain_def: dict[str, Any]) -> dict[st
             f"total_chars={state.get('total_output_chars', 0)} "
             f"duration_s={duration_s} "
             f"host_driven=true"
+            + (f" halted={state['halted']}" if state.get("halted") else "")
         ),
         chain_id=state["chain_id"],
-        phase_status="success" if state["phases_failed"] == 0 else "failed",
+        phase_status="success" if state["phases_failed"] == 0 and not state.get("halted") else "failed",
     )
 
     # Regenerate the wallboard once at chain end. Per-event regen is suppressed during
@@ -276,6 +312,7 @@ def _summary_envelope(state: dict[str, Any]) -> dict[str, Any]:
         "phases_defined": state["phases_defined"],
         "phases_executed": state["phases_executed"],
         "phases_failed": state["phases_failed"],
+        "halted": state.get("halted", ""),
         "duration_s": state.get("duration_s"),
         "completed_at": state.get("completed_at"),
         "state_path": str(state_path(state["chain_id"])),
@@ -353,6 +390,7 @@ def cmd_advance(args: argparse.Namespace) -> int:
         if args.reject:
             reason = args.reason or "rejected_by_host"
             state["pending_hitl"] = False
+            state["halted"] = "hitl_rejected"
             state["current_phase_index"] = len(phases)  # halt
             save_state(state)
             log_event(
@@ -362,14 +400,11 @@ def cmd_advance(args: argparse.Namespace) -> int:
             print(json.dumps(finalize_chain(state, chain_def), indent=2))
             return 0
         if not args.approve:
-            envelope = build_envelope_for_phase(state, chain_def)
-            envelope["awaiting_approval"] = True
-            envelope["approval_for_phase_index"] = state["current_phase_index"]
-            envelope["approval_message"] = (
+            envelope = _gate_envelope(state, chain_def, (
                 "The previous phase requested human-in-the-loop approval before the chain proceeds. "
                 "Re-invoke 'next_phase.py advance --chain-id <id> --approve' to continue, "
                 "or '--reject --reason <text>' to halt."
-            )
+            ))
             print(json.dumps(envelope, indent=2))
             return 0
         # --approve: clear the gate, log the start of the next phase, return its envelope,
@@ -458,15 +493,12 @@ def cmd_advance(args: argparse.Namespace) -> int:
         state["pending_hitl"] = True
         state["current_phase_index"] = just_finished_idx + 1
         save_state(state)
-        envelope = build_envelope_for_phase(state, chain_def)
-        envelope["awaiting_approval"] = True
-        envelope["approval_for_phase_index"] = state["current_phase_index"]
-        envelope["approval_message"] = (
+        envelope = _gate_envelope(state, chain_def, (
             f"Phase {just_finished_idx + 1} ({prev_name}) completed and is marked for "
-            f"human-in-the-loop review before the next phase runs. Re-invoke "
+            f"human-in-the-loop review before the chain continues or finishes. Re-invoke "
             f"'next_phase.py advance --chain-id {state['chain_id']} --approve' to continue, "
             f"or '--reject --reason <text>' to halt."
-        )
+        ))
         print(json.dumps(envelope, indent=2))
         return 0
 

@@ -10,10 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - `scripts/next_phase.py`, the host-driven chain engine the chain agents use: `start`, `advance` and `status`, one JSON envelope per phase, approval gates from `on_phase_complete: "hitl"`, `--failed`, `--skipped`, `--approve` and `--reject`, and `--query-file` / `--phase-output-file`. It never calls a model, so chains run on the host's subscription.
 - SKILL.md and README sections on the engine.
+- `tests/test_next_phase.py` (final approval gate: approve and reject) and log fallback tests for `orchestrate.py`.
 
 ### Changed
-- `orchestrate.py` chain execution enforces mandatory phases: every phase logs a terminal status with its `phase_id`; a mandatory phase that fails, is blocked by the allowlist, or declares `CHAIN_PHASE_STATUS: not_applicable` stops the chain, while optional phases log `skipped` or `not_applicable` and the chain continues. A declined mid-chain approval gate also stops it, and the summary event names the phase that stopped the chain.
-- README rewritten around chain definitions, the allowlist and telemetry. SKILL.md version marker realigned (it said 1.0.0).
+- `orchestrate.py` chain execution enforces mandatory phases: every phase logs a terminal status with its `phase_id`; a mandatory phase that fails, is blocked by the allowlist, or declares `CHAIN_PHASE_STATUS: not_applicable` stops the chain, while optional phases log `skipped` or `not_applicable` and the chain continues. A declined mid-chain approval gate also stops it. The `chain_completed` summary names the phase that stopped the chain, and the exit code is 1 whenever a mandatory phase stopped it. Mandatory enforcement is an `orchestrate.py` feature; `next_phase.py` records outcomes and leaves the decision to the agent.
+- README rewritten around chain definitions, the allowlist and telemetry. SKILL.md version marker realigned (it said 1.0.0), and `metadata` carries author and version.
+
+### Fixed
+- A status the installed `dispatch_logger.py` does not accept (`blocked`, `not_applicable`, `skipped` on older versions) no longer drops the event: both scripts retry with a status the logger accepts and keep the precise one in the reason; `orchestrate.py` warns when an event is still rejected.
+- `next_phase.py`: an approval gate after the last phase finished the chain at once, so `--reject` did nothing and the saved state kept `pending_hitl`. The gate now holds the chain open (this affects `test-lifecycle-skill`, whose final report is gated).
+- `next_phase.py`: a rejected gate was summarised as a success; the summary now reports `halted: hitl_rejected` and logs the chain as failed.
 
 ## [1.1.0] - 2026-05-11
 

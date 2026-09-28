@@ -6,6 +6,8 @@ metadata:
   dispatcher-category: orchestration
   dispatcher-layer: execution
   dispatcher-lifecycle: active
+  author: jovd83
+  version: "1.2.0"
   dispatcher-risk: medium
   dispatcher-writes-files: true
   dispatcher-capabilities: skill-execution, sequence-runner, phase-orchestration, chain-telemetry
@@ -48,7 +50,8 @@ python scripts/next_phase.py advance --chain-id <id> --approve | --reject --reas
 python scripts/next_phase.py status  --chain-id <id>
 ```
 
-- A phase with `"on_phase_complete": "hitl"` returns `awaiting_approval: true`; the chain waits for `--approve` or `--reject`.
+- A phase with `"on_phase_complete": "hitl"` returns `awaiting_approval: true`; the chain waits for `--approve` or `--reject`. A gate after the last phase holds the chain open too (`final_gate: true`); `--reject` halts it and the summary reports `halted`.
+- `next_phase.py` records every outcome (`--failed`, `--skipped`) but does not enforce `mandatory` itself: the agent decides whether a failed phase ends the run. Mandatory-phase enforcement (step 5 below) is built into `orchestrate.py`.
 - A phase without a `skill` is agent-handled: the envelope has an empty `system_prompt` and `agent_handled: true`.
 - `--skipped` records a not-applicable phase without counting it as a failure.
 - Run state lives in `~/.agents/dispatcher-data/chain_runs/<chain_id>.json`; phase skills are read from `~/.agents/skills/<skill>/SKILL.md`.
@@ -80,7 +83,7 @@ These skills are sequence definitions, not single invocations. Route them throug
 2. **Decide**: Read the routing decision (from `--routing-decision` JSON or by calling dispatcher logic).
 3. **Phase 0**: If decision is `SEQUENCE` or if risk is `high`, invoke the Phase 0 context skill and emit a `CONTEXT_LOAD` event.
 4. **Phase 1 / Chain execution**: Invoke the specialist skill or every phase in `config/chain_definition.json`. Log `HANDOFF` or `SEQUENCE` with the shared `chain_id`.
-5. **Mandatory phase enforcement**: For chain definitions, each mandatory phase must emit a terminal event containing `phase_id` and `phase_status` (`success`, `failed`, or `blocked`). Optional phases may emit `skipped` or `not_applicable`, but they must still be logged. Stop the chain when a mandatory phase fails, is blocked, or declares itself not applicable.
+5. **Mandatory phase enforcement** (`orchestrate.py`): For chain definitions, each mandatory phase must emit a terminal event containing `phase_id` and `phase_status` (`success`, `failed`, or `blocked`). Optional phases may emit `skipped` or `not_applicable`, but they must still be logged. Stop the chain when a mandatory phase fails, is blocked, or declares itself not applicable.
 6. **Summary**: Print the chain log JSON (chain_id, skill, model, tokens, phase status).
 
 ## Allowlist

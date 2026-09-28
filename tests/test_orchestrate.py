@@ -192,6 +192,47 @@ class TestRunChainEnforcement(unittest.TestCase):
         assert orchestrate.classify_phase_status("CHAIN_PHASE_STATUS: not_applicable", 0, mandatory=True) == "failed"
 
 
+class TestLogEventFallback(unittest.TestCase):
+    """A status the installed dispatch_logger rejects is retried with one it accepts."""
+
+    def test_blocked_is_retried_as_failed_with_the_precise_status_in_the_reason(self):
+        calls = []
+
+        def fake_run(cmd, **_kwargs):
+            calls.append(cmd)
+            rc = 2 if "blocked" in cmd else 0  # an older logger only knows success/failed
+
+            class Result:
+                returncode = rc
+            return Result()
+
+        with patch.object(orchestrate, "find_dispatcher_script", return_value=Path("dispatch_logger.py")), \
+                patch.object(orchestrate.subprocess, "run", side_effect=fake_run):
+            orchestrate.log_event(decision="HANDOFF", skill="s", intent="i", reason="r", chain_id="c",
+                                  phase_status="blocked", phase_id="p1")
+        assert len(calls) == 2
+        retry = calls[1]
+        assert retry[retry.index("--phase-status") + 1] == "failed"
+        assert "r phase_id=p1 phase_status=blocked" in retry
+
+    def test_skipped_falls_back_to_no_status(self):
+        calls = []
+
+        def fake_run(cmd, **_kwargs):
+            calls.append(cmd)
+
+            class Result:
+                returncode = 2 if "skipped" in cmd else 0
+            return Result()
+
+        with patch.object(orchestrate, "find_dispatcher_script", return_value=Path("dispatch_logger.py")), \
+                patch.object(orchestrate.subprocess, "run", side_effect=fake_run):
+            orchestrate.log_event(decision="HANDOFF", skill="s", intent="i", reason="r", chain_id="c",
+                                  phase_status="skipped")
+        assert len(calls) == 2
+        assert "--phase-status" not in calls[1]
+
+
 class TestDryRunEndToEnd(unittest.TestCase):
     def test_dry_run_with_query(self):
         """Dry run with query should produce a chain_log and exit 1 (no skill selected)."""

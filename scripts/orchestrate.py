@@ -73,6 +73,11 @@ def load_chain_definition(skill_name: str) -> "dict | None":
 
 NOT_APPLICABLE_MARKER = "CHAIN_PHASE_STATUS: not_applicable"
 
+# Status to retry with when the installed dispatch_logger rejects the precise one (it may only know
+# success/failed). None means: send no --phase-status, the precise status stays in the reason.
+LOGGER_FALLBACK_STATUS = {"success": "success", "failed": "failed", "blocked": "failed",
+                          "skipped": None, "not_applicable": None}
+
 
 def classify_phase_status(response_text: str, rc: int, mandatory: bool) -> str:
     """Terminal status of an invoked phase: success, failed or not_applicable.
@@ -487,25 +492,31 @@ def log_event(
     ]
     if target:
         cmd += ["--target", target]
-    if phase_status:
-        cmd += ["--phase-status", phase_status]
     # dispatch_logger requires --skills for SEQUENCE decisions. Default to the
     # primary skill so chain_initiated / chain_completed events can be written.
     effective_skills = skills or (skill if decision == "SEQUENCE" else "")
     if effective_skills:
         cmd += ["--skills", effective_skills]
 
+    attempts = [cmd + (["--phase-status", phase_status] if phase_status else [])]
+    fallback = LOGGER_FALLBACK_STATUS.get(phase_status)
+    if phase_status and fallback != phase_status:
+        # Older dispatch_logger versions accept fewer statuses; keep the precise one in the reason.
+        retry = [a if a != reason else reason + " phase_status=" + phase_status for a in cmd]
+        attempts.append(retry + (["--phase-status", fallback] if fallback else []))
+
     if dry_run:
-        print(f"  [dry-run] log: {' '.join(cmd)}")
+        print(f"  [dry-run] log: {' '.join(attempts[0])}")
         return
 
+    env = {**os.environ, "SKILL_DISPATCH_DISABLE_WALLBOARD": "1", "SKILL_DISPATCH_CHAIN_ID": chain_id}
     try:
-        subprocess.run(cmd, capture_output=True, check=False,
-                       env={
-                           **os.environ,
-                           "SKILL_DISPATCH_DISABLE_WALLBOARD": "1",
-                           "SKILL_DISPATCH_CHAIN_ID": chain_id,
-                       })
+        for attempt in attempts:
+            result = subprocess.run(attempt, capture_output=True, check=False, env=env)
+            if result.returncode == 0:
+                return
+        print(f"  [!] log_event: dispatch_logger rejected the event (rc={result.returncode}): {decision} {skill}",
+              file=sys.stderr)
     except Exception as exc:
         print(f"  [!] log_event failed: {exc}", file=sys.stderr)
 
