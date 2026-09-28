@@ -13,6 +13,7 @@ import os
 import subprocess
 import sys
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 DEFAULT_MODEL = "claude-sonnet-4-6"
@@ -70,6 +71,22 @@ def load_chain_definition(skill_name: str) -> "dict | None":
     return None
 
 
+NOT_APPLICABLE_MARKER = "CHAIN_PHASE_STATUS: not_applicable"
+
+
+def classify_phase_status(response_text: str, rc: int, mandatory: bool) -> str:
+    """Terminal status of an invoked phase: success, failed or not_applicable.
+
+    A phase may declare itself not applicable with NOT_APPLICABLE_MARKER in its output. That is a
+    valid terminal status for an optional phase; a mandatory phase that does so has failed.
+    """
+    if rc != 0:
+        return "failed"
+    if NOT_APPLICABLE_MARKER.lower() in (response_text or "").lower():
+        return "failed" if mandatory else "not_applicable"
+    return "success"
+
+
 def run_chain(
     chain_def: dict,
     routing_decision: dict,
@@ -79,6 +96,7 @@ def run_chain(
     model: str = DEFAULT_MODEL,
     timeout_sec: int = DEFAULT_API_TIMEOUT_SEC,
     max_tokens_per_chain: int = DEFAULT_MAX_TOKENS_PER_CHAIN,
+    auto_approve: bool = False,
 ) -> int:
     """Execute a multi-phase chain from chain_definition.json.
 
@@ -96,6 +114,13 @@ def run_chain(
 
     print("\n[*] chain=" + chain_name + " phases=" + str(len(phases)) + " chain_id=" + chain_id)
 
+    # Pin chain_id into process env so any indirect log-dispatch invocations
+    # (e.g. sub-skills that shell out to log-dispatch.cmd themselves) inherit it.
+    os.environ["SKILL_DISPATCH_CHAIN_ID"] = chain_id
+
+    chain_started_at = datetime.now()
+    phases_executed = 0
+
     # Log chain entry point so the trigger event and all phase events share chain_id in the wallboard.
     log_event(
         decision="SEQUENCE",
@@ -106,14 +131,19 @@ def run_chain(
         dry_run=dry_run,
     )
 
+    stop = None  # (phase_id, status) of the mandatory phase that stopped the chain
     for i, phase in enumerate(phases, 1):
         phase_skill = phase.get("skill")
+        phase_id = phase.get("id") or ("phase_" + str(i))
+        mandatory = phase.get("mandatory", True)
         phase_name = phase.get("name", "phase_" + str(i))
         phase_intent = phase.get("intent", intent)
         phase_reason = phase.get("reason", "chain_phase_" + str(i))
         pass_forward = phase.get("pass_context_forward", True)
 
         print("\n  [" + str(i) + "/" + str(len(phases)) + "] " + phase_name)
+
+        phase_status = "skipped"
 
         if not phase_skill:
             print("    -> agent-handled (no sub-skill defined)")
@@ -125,71 +155,159 @@ def run_chain(
                 chain_id=chain_id,
                 phase_status="success",
                 dry_run=dry_run,
+                phase_id=phase_id,
             )
-            continue
-
-        if phase_skill not in allowlist:
+            phases_executed += 1
+            phase_status = "success"
+        elif phase_skill not in allowlist:
             print("    -> BLOCKED: '" + phase_skill + "' not in allowlist — add to executable_skills.json")
-            failed_phases.append(phase_skill)
+            phase_status = "blocked" if mandatory else "skipped"
+            log_event(
+                decision="HANDOFF",
+                skill=phase_skill,
+                intent=phase_intent,
+                reason="chain=" + chain_name + " phase=" + str(i) + " not_in_allowlist",
+                chain_id=chain_id,
+                phase_status=phase_status,
+                dry_run=dry_run,
+                phase_id=phase_id,
+            )
+            if mandatory:
+                failed_phases.append(phase_skill)
+                stop = (phase_id, "blocked")
+                print("    [!] Mandatory phase blocked — stopping the chain.")
+                break
             continue
-
-        print("    -> " + phase_skill)
-
-        # Build phase query: original query + context accumulated from prior phases
-        if context_accumulator:
-            phase_query = query + "\n\n---\nContext from previous chain phases:\n" + context_accumulator
         else:
-            phase_query = query
-        # Append phase-level constraints so the sub-skill receives them in its prompt.
-        query_suffix = phase.get("query_suffix", "")
-        if query_suffix:
-            phase_query = phase_query + "\n\n[CHAIN CONSTRAINT]\n" + query_suffix
+            print("    -> " + phase_skill)
 
-        log_event(
-            decision="HANDOFF",
-            skill=phase_skill,
-            intent=phase_intent,
-            reason="chain=" + chain_name + " phase=" + str(i) + "/" + str(len(phases)) + " " + phase_reason,
-            chain_id=chain_id,
-            dry_run=dry_run,
-        )
+            # Build phase query: original query + context accumulated from prior phases
+            if context_accumulator:
+                phase_query = query + "\n\n---\nContext from previous chain phases:\n" + context_accumulator
+            else:
+                phase_query = query
+            # Append phase-level constraints so the sub-skill receives them in its prompt.
+            query_suffix = phase.get("query_suffix", "")
+            if query_suffix:
+                phase_query = phase_query + "\n\n[CHAIN CONSTRAINT]\n" + query_suffix
 
-        response_text, rc, tokens = _invoke_skill_via_api(
-            skill_name=phase_skill,
-            query=phase_query,
-            context="",
-            model=model,
-            dry_run=dry_run,
-            timeout_sec=timeout_sec,
-            tokens_used_so_far=total_tokens,
-            max_tokens_per_chain=max_tokens_per_chain,
-        )
-        total_tokens += tokens
-        phase_status = "success" if rc == 0 else "failed"
+            log_event(
+                decision="HANDOFF",
+                skill=phase_skill,
+                intent=phase_intent,
+                reason="chain=" + chain_name + " phase=" + str(i) + "/" + str(len(phases)) + " " + phase_reason,
+                chain_id=chain_id,
+                dry_run=dry_run,
+                phase_id=phase_id,
+            )
 
-        log_event(
-            decision="HANDOFF",
-            skill=phase_skill,
-            intent=phase_intent,
-            reason="chain_phase_complete chain=" + chain_name + " phase=" + str(i) + " tokens=" + str(tokens) + " rc=" + str(rc),
-            chain_id=chain_id,
-            phase_status=phase_status,
-            dry_run=dry_run,
-        )
+            response_text, rc, tokens = _invoke_skill_via_api(
+                skill_name=phase_skill,
+                query=phase_query,
+                context="",
+                model=model,
+                dry_run=dry_run,
+                timeout_sec=timeout_sec,
+                tokens_used_so_far=total_tokens,
+                max_tokens_per_chain=max_tokens_per_chain,
+            )
+            total_tokens += tokens
+            phase_status = classify_phase_status(response_text, rc, mandatory)
 
-        if rc != 0:
-            print("    [!] Phase " + str(i) + " (" + phase_skill + ") failed (rc=" + str(rc) + ") — continuing")
-            failed_phases.append(phase_skill)
-        elif pass_forward and response_text:
-            snippet = response_text[:3000]
-            context_accumulator += "\n\n=== Phase " + str(i) + ": " + phase_name + " (" + phase_skill + ") ===\n" + snippet
-            if len(response_text) > 3000:
-                context_accumulator += "\n... [" + str(len(response_text) - 3000) + " chars truncated]"
+            log_event(
+                decision="HANDOFF",
+                skill=phase_skill,
+                intent=phase_intent,
+                reason="chain_phase_complete chain=" + chain_name + " phase=" + str(i) + " tokens=" + str(tokens) + " rc=" + str(rc),
+                chain_id=chain_id,
+                phase_status=phase_status,
+                dry_run=dry_run,
+                phase_id=phase_id,
+            )
+            phases_executed += 1
 
-    print("\n[*] Chain complete: " + str(total_tokens) + " tokens across " + str(len(phases)) + " phases")
+            if phase_status == "failed":
+                failed_phases.append(phase_skill)
+                if mandatory:
+                    print("    [!] Mandatory phase " + str(i) + " (" + phase_skill + ") failed (rc=" + str(rc) + ") — stopping the chain")
+                    stop = (phase_id, "failed")
+                    break
+                print("    [!] Optional phase " + str(i) + " (" + phase_skill + ") failed (rc=" + str(rc) + ") — continuing")
+            elif phase_status == "not_applicable":
+                print("    -> not applicable (optional) — continuing")
+            elif pass_forward and response_text:
+                snippet = response_text[:3000]
+                context_accumulator += "\n\n=== Phase " + str(i) + ": " + phase_name + " (" + phase_skill + ") ===\n" + snippet
+                if len(response_text) > 3000:
+                    context_accumulator += "\n... [" + str(len(response_text) - 3000) + " chars truncated]"
+
+        # Mid-chain HITL gate: pause if this phase declared on_phase_complete: "hitl"
+        # and it succeeded. Skipped on dry-run or when auto-approve is on.
+        if (
+            phase.get("on_phase_complete") == "hitl"
+            and phase_status == "success"
+            and not dry_run
+            and not auto_approve
+        ):
+            approved = _mid_chain_hitl_gate(
+                chain_name=chain_name,
+                phase_num=i,
+                total_phases=len(phases),
+                phase_name=phase_name,
+                hitl_note=phase.get("_hitl_note", ""),
+                chain_id=chain_id,
+            )
+            log_event(
+                decision="SEQUENCE",
+                skill=chain_name,
+                intent="hitl_gate",
+                reason=(
+                    "hitl_gate chain=" + chain_name
+                    + " phase=" + str(i) + "/" + str(len(phases))
+                    + " decision=" + ("approved" if approved else "declined")
+                ),
+                chain_id=chain_id,
+                phase_status="success" if approved else "failed",
+                dry_run=dry_run,
+            )
+            if not approved:
+                print("  [!] HITL gate at phase " + str(i) + " declined — aborting chain.")
+                failed_phases.append("hitl_gate@" + str(i))
+                stop = (phase_id, "failed")
+                break
+
+    duration_s = round((datetime.now() - chain_started_at).total_seconds(), 2)
+    phases_defined = len(phases)
+    phases_failed = len(failed_phases)
+
+    print("\n[*] Chain complete: " + str(total_tokens) + " tokens across "
+          + str(phases_executed) + "/" + str(phases_defined) + " phases ("
+          + str(duration_s) + "s)")
     if failed_phases:
         print("    [!] Failed phases: " + str(failed_phases))
-    return 1 if len(failed_phases) == len(phases) else 0
+
+    # Emit a single chain_completed summary event so partial runs are visible from the log alone.
+    # Without this, the only way to detect "chain ran 7 of 9 phases" is to manually count chain_id rows.
+    log_event(
+        decision="SEQUENCE",
+        skill=chain_name,
+        intent="chain_completed",
+        reason=(
+            "chain_completed phases_defined=" + str(phases_defined)
+            + " phases_executed=" + str(phases_executed)
+            + " phases_failed=" + str(phases_failed)
+            + " total_tokens=" + str(total_tokens)
+            + " duration_s=" + str(duration_s)
+            + (" stopped_by=" + stop[0] if stop else "")
+        ),
+        chain_id=chain_id,
+        # When a mandatory phase stopped the chain, the summary carries that phase's id and status.
+        phase_status=stop[1] if stop else ("success" if phases_failed == 0 else "failed"),
+        dry_run=dry_run,
+        phase_id=stop[0] if stop else "",
+    )
+
+    return 1 if stop or phases_failed == phases_defined else 0
 
 
 
@@ -347,8 +465,12 @@ def log_event(
     chain_id: str,
     target: str = "",
     phase_status: str = "",
+    skills: str = "",
     dry_run: bool = False,
+    phase_id: str = "",
 ) -> None:
+    if phase_id:  # dispatch_logger has no phase-id field; keep it in the reason
+        reason = reason + " phase_id=" + phase_id
     logger = find_dispatcher_script("dispatch_logger.py")
     if logger is None:
         print(f"  [~] No logger found -- skipping event: {decision} {skill}")
@@ -367,6 +489,11 @@ def log_event(
         cmd += ["--target", target]
     if phase_status:
         cmd += ["--phase-status", phase_status]
+    # dispatch_logger requires --skills for SEQUENCE decisions. Default to the
+    # primary skill so chain_initiated / chain_completed events can be written.
+    effective_skills = skills or (skill if decision == "SEQUENCE" else "")
+    if effective_skills:
+        cmd += ["--skills", effective_skills]
 
     if dry_run:
         print(f"  [dry-run] log: {' '.join(cmd)}")
@@ -374,7 +501,11 @@ def log_event(
 
     try:
         subprocess.run(cmd, capture_output=True, check=False,
-                       env={**os.environ, "SKILL_DISPATCH_DISABLE_WALLBOARD": "1"})
+                       env={
+                           **os.environ,
+                           "SKILL_DISPATCH_DISABLE_WALLBOARD": "1",
+                           "SKILL_DISPATCH_CHAIN_ID": chain_id,
+                       })
     except Exception as exc:
         print(f"  [!] log_event failed: {exc}", file=sys.stderr)
 
@@ -429,6 +560,47 @@ def _hitl_approval_gate(skill_name: str, query: str, chain_id: str) -> bool:
     print(f"  +----------------------------+")
     try:
         answer = input("  Proceed with execution? [y/N]: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        return False
+    return answer in {"y", "yes"}
+
+
+def _mid_chain_hitl_gate(
+    chain_name: str,
+    phase_num: int,
+    total_phases: int,
+    phase_name: str,
+    hitl_note: str,
+    chain_id: str,
+) -> bool:
+    """Prompt for human approval after a phase declared on_phase_complete: 'hitl'.
+
+    Honors SKILL_ORCHESTRATOR_AUTO_APPROVE for non-interactive runs.
+    Returns True to continue the chain, False to abort.
+    """
+    if os.environ.get("SKILL_ORCHESTRATOR_AUTO_APPROVE", "").lower() in {"1", "true", "yes"}:
+        print(f"  [HITL] auto-approve env set -- continuing past phase {phase_num} gate.")
+        return True
+
+    if not sys.stdin.isatty():
+        print(
+            f"  [HITL] non-interactive shell, no auto-approve env var set -- "
+            f"declining mid-chain gate at phase {phase_num}/{total_phases} "
+            f"({phase_name}). Chain will abort.",
+            file=sys.stderr,
+        )
+        return False
+
+    print()
+    print(f"  +-- HITL gate: phase {phase_num}/{total_phases} complete --+")
+    print(f"    Chain   : {chain_name}")
+    print(f"    Phase   : {phase_name}")
+    if hitl_note:
+        print(f"    Note    : {hitl_note}")
+    print(f"    ChainId : {chain_id}")
+    print(f"  +------------------------------------------------+")
+    try:
+        answer = input("  Approve and continue to next phase? [y/N]: ").strip().lower()
     except (EOFError, KeyboardInterrupt):
         return False
     return answer in {"y", "yes"}
@@ -629,7 +801,9 @@ def main() -> int:
     if not args.routing_decision and not args.query:
         parser.error("Provide --routing-decision JSON or --query.")
 
-    chain_id = str(uuid.uuid4())[:8]
+    # Inherit chain_id from SKILL_DISPATCH_CHAIN_ID env when present so a caller
+    # (subagent, wrapper script, scheduled job) can tag a known id onto the run.
+    chain_id = os.environ.get("SKILL_DISPATCH_CHAIN_ID", "").strip() or str(uuid.uuid4())[:8]
     print(f"[*] skill-orchestrator | chain_id={chain_id}")
 
     # Step 1: Bootstrap
@@ -674,6 +848,7 @@ def main() -> int:
             model=args.model,
             timeout_sec=args.api_timeout,
             max_tokens_per_chain=args.max_tokens_per_chain,
+            auto_approve=args.auto_approve,
         )
         print(json.dumps({"chain_id": chain_id, "chain_name": chain_def.get("chain_name"), "exit_code": rc}, indent=2))
         return rc

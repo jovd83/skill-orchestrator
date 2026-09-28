@@ -1,6 +1,6 @@
 # skill-orchestrator
 
-[![version](https://img.shields.io/badge/version-1.1.0-blue)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-1.2.0-blue)](CHANGELOG.md)
 [![status](https://img.shields.io/badge/status-stable--beta-f0ad4e)](SKILL.md)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-ffdd00?style=flat&logo=buy-me-a-coffee&logoColor=black)](https://buymeacoffee.com/jovd83)
@@ -72,6 +72,7 @@ python ../skill-dispatcher/scripts/dispatch_cli.py \
       "intent": "discover_repo_conventions",
       "reason": "why this phase exists",
       "risk": "low",
+      "mandatory": true,
       "pass_context_forward": true
     },
     {
@@ -97,6 +98,8 @@ python ../skill-dispatcher/scripts/dispatch_cli.py \
 
 `query_suffix` is injected as a `[CHAIN CONSTRAINT]` block into the sub-skill's prompt — use it for self-gating phases that only apply to certain scenarios.
 
+`mandatory` defaults to `true` when omitted. Mandatory phases stop the chain if they fail, are blocked, or declare themselves not applicable. Optional phases may return `CHAIN_PHASE_STATUS: not_applicable`; the orchestrator logs that terminal status and continues.
+
 ## Security: the allowlist gate
 
 Only skills listed in `skill-dispatcher/config/executable_skills.json` can be invoked. Add a skill name explicitly to permit execution. Never auto-populate from the registry.
@@ -108,12 +111,27 @@ Every step emits an event to `dispatch_events.jsonl` under the same `chain_id`:
 | Step | Event type | Emitted by |
 |:-----|:-----------|:-----------|
 | Chain entry | `SEQUENCE` | `run_chain()` — links trigger to all phases |
-| Each phase start | `HANDOFF` | `run_chain()` |
-| Each phase complete | `HANDOFF` + `phase_status` | `run_chain()` |
-| Agent-handled phases | `HANDOFF` | `run_chain()` |
+| Each phase start | `HANDOFF` + `phase_id` | `run_chain()` |
+| Each phase complete | `HANDOFF` + `phase_id` + `phase_status` | `run_chain()` |
+| Agent-handled phases | `HANDOFF` + `phase_id` + `phase_status=success` | `run_chain()` |
 | Bootstrap | `POLICY_CONSULT` | `dispatch_bootstrap.py` |
 
 `chain_id` is auto-generated (UUID) if not passed explicitly. Passing `--chain-id` links events across multiple orchestrator invocations.
+
+Terminal phase statuses are `success`, `failed`, `blocked`, `skipped`, and `not_applicable`. Every mandatory phase must end with `success`, `failed`, or `blocked`; silent omission is a compliance failure.
+
+## Host-driven chain engine
+
+`scripts/next_phase.py` runs a chain without calling any model: it returns one phase at a time as a JSON envelope, the calling agent produces the phase output on its own model, and `advance` records it. The Claude Code chain agents (`bug-fix-lifecycle`, `new-feature-sdlc`, `principal-audit-refactor`, `project-genesis`, `test-lifecycle`) and Codex use it, so chains bill to the host's subscription instead of an API key.
+
+```bash
+python scripts/next_phase.py start   --chain bug-fix-lifecycle --query-file request.md --host claude-code
+python scripts/next_phase.py advance --chain-id <id> --phase-output-file output.md
+python scripts/next_phase.py advance --chain-id <id> --approve        # at an approval gate
+python scripts/next_phase.py status  --chain-id <id>
+```
+
+Approval gates come from `"on_phase_complete": "hitl"` in `chain_definition.json`. `--failed` and `--skipped` mark the phase that just ran; `--reject --reason` halts the chain. Run state is kept in `~/.agents/dispatcher-data/chain_runs/`.
 
 ## Repository structure
 
@@ -122,7 +140,9 @@ skill-orchestrator/
 ├── SKILL.md                  # Dispatcher contract
 ├── README.md                 # This file
 ├── scripts/
-│   └── orchestrate.py        # Main entry point — chain detection, run_chain(), phase execution
+│   ├── next_phase.py         # Host-driven chain engine used by the chain agents (no model calls)
+│   ├── orchestrate.py        # API-key runner — chain detection, run_chain(), phase execution
+│   └── validate_repo.py      # Repository validation (runs the tests)
 └── tests/
     └── test_orchestrate.py
 ```

@@ -137,6 +137,61 @@ class TestPhaseOne(unittest.TestCase):
         mock_hitl.assert_not_called()
 
 
+class TestRunChainEnforcement(unittest.TestCase):
+    def test_mandatory_phase_blocked_by_allowlist_stops_chain(self):
+        chain_def = {
+            "chain_name": "demo-chain",
+            "phases": [
+                {
+                    "id": "must_run",
+                    "name": "Step 1 - Must run",
+                    "skill": "missing-skill",
+                    "intent": "do_work",
+                    "mandatory": True,
+                }
+            ],
+        }
+        with patch.object(orchestrate, "log_event") as mock_log:
+            rc = orchestrate.run_chain(
+                chain_def,
+                {"selected_skill": "demo-chain", "query": "x"},
+                allowlist=[],
+                chain_id="abc",
+                dry_run=True,
+            )
+        assert rc == 1
+        blocked_call = mock_log.call_args_list[-1].kwargs
+        assert blocked_call["phase_id"] == "must_run"
+        assert blocked_call["phase_status"] == "blocked"
+
+    def test_optional_phase_blocked_by_allowlist_continues(self):
+        chain_def = {
+            "chain_name": "demo-chain",
+            "phases": [
+                {
+                    "id": "may_skip",
+                    "name": "Step 1 - May skip",
+                    "skill": "missing-skill",
+                    "intent": "do_work",
+                    "mandatory": False,
+                }
+            ],
+        }
+        with patch.object(orchestrate, "log_event"):
+            rc = orchestrate.run_chain(
+                chain_def,
+                {"selected_skill": "demo-chain", "query": "x"},
+                allowlist=[],
+                chain_id="abc",
+                dry_run=True,
+            )
+        assert rc == 0
+
+    def test_optional_not_applicable_marker_is_terminal_status(self):
+        assert orchestrate.classify_phase_status("CHAIN_PHASE_STATUS: not_applicable", 0, mandatory=False) == "not_applicable"
+        assert orchestrate.classify_phase_status("CHAIN_PHASE_STATUS: not_applicable", 0, mandatory=True) == "failed"
+
+
 class TestDryRunEndToEnd(unittest.TestCase):
     def test_dry_run_with_query(self):
         """Dry run with query should produce a chain_log and exit 1 (no skill selected)."""
