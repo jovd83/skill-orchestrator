@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-09-29
+
+### Added
+- A refused call also prints a JSON error object on stdout, next to the message on stderr and exit code 2: `{"error": "<code>", "message": "...", "chain_id": "..."}`. The chain agents redirect stdout into their envelope file, which a refusal used to leave empty. The codes are `no_chain_state`, `no_chain_definition`, `missing_query`, `chain_id_exists`, `chain_finished`, `no_pending_gate` and `missing_phase_output`. `chain_id` is present only when the caller named the chain. Argparse usage errors (exit code 2) and unreadable input files (exit code 1) still print nothing on stdout.
+
+### Fixed
+- `--approve` and `--reject` are refused when no approval gate is pending (`no_pending_gate`), as `--finish` already was. Before, `advance --reject --phase-output <text>` in the middle of a chain recorded the phase as a success and carried on.
+
 ## [1.3.1] - 2026-09-29
 
 ### Fixed

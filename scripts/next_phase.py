@@ -36,6 +36,16 @@ returns "awaiting_approval": true and refuses to advance until a decision:
                 logged as a success unless an earlier phase failed; the summary reports
                 "finished_early": "<reason>" (used by audit-only runs)
 A gate after the last phase holds the chain open the same way; its envelope has "final_gate": true.
+The three decisions are refused when no gate is pending. On a finished chain, --approve returns the
+summary again and --reject or --finish is refused.
+
+A refused call exits with code 2, writes the reason to stderr and prints a JSON error object on stdout,
+so an envelope file the caller redirects into says what went wrong instead of being left empty:
+    {"error": "no_pending_gate", "message": "...", "chain_id": "..."}
+Error codes: no_chain_state, no_chain_definition, missing_query, chain_id_exists, chain_finished,
+no_pending_gate, missing_phase_output. Two kinds of failure still print nothing on stdout: argparse
+usage errors (exit code 2, e.g. two gate decisions at once or a missing --chain-id) and unreadable
+input (exit code 1, e.g. a missing --query-file or --phase-output-file, or a corrupt state file).
 """
 
 from __future__ import annotations
@@ -57,6 +67,19 @@ DISPATCHER_SCRIPTS = SKILLS_DIR / "skill-dispatcher" / "scripts"
 CONTEXT_CLIP = 6000  # max chars of accumulated context passed into a phase prompt
 
 
+# ---------- refusals ----------
+
+def refuse(code: str, message: str, chain_id: str = "") -> int:
+    """Refuse the call: the message on stderr, a JSON error object on stdout, exit code 2.
+    Agents redirect stdout into their envelope file, which would otherwise be left empty."""
+    sys.stderr.write(f"[!] {message}\n")
+    error = {"error": code, "message": message}
+    if chain_id:
+        error["chain_id"] = chain_id
+    print(json.dumps(error, indent=2))
+    return 2
+
+
 # ---------- state ----------
 
 def state_path(chain_id: str) -> Path:
@@ -66,8 +89,7 @@ def state_path(chain_id: str) -> Path:
 def load_state(chain_id: str) -> dict[str, Any]:
     p = state_path(chain_id)
     if not p.exists():
-        sys.stderr.write(f"[!] no chain state for chain_id={chain_id} at {p}\n")
-        sys.exit(2)
+        sys.exit(refuse("no_chain_state", f"no chain state for chain_id={chain_id} at {p}", chain_id))
     return json.loads(p.read_text(encoding="utf-8"))
 
 
@@ -87,8 +109,7 @@ def load_chain_definition(chain_name: str) -> dict[str, Any]:
     for p in candidates:
         if p.exists():
             return json.loads(p.read_text(encoding="utf-8"))
-    sys.stderr.write(f"[!] no chain_definition.json found for chain '{chain_name}'\n")
-    sys.exit(2)
+    sys.exit(refuse("no_chain_definition", f"no chain_definition.json found for chain '{chain_name}'"))
 
 
 def load_skill_md(skill_name: str) -> str:
@@ -335,24 +356,21 @@ def cmd_start(args: argparse.Namespace) -> int:
     chain_def = load_chain_definition(args.chain)
     phases = chain_def["phases"]
 
-    chain_id = args.chain_id or (
-        os.environ.get("SKILL_DISPATCH_CHAIN_ID", "").strip()
-        or f"{args.chain}-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:4]}"
-    )
+    given_id = args.chain_id or os.environ.get("SKILL_DISPATCH_CHAIN_ID", "").strip()
+    chain_id = given_id or f"{args.chain}-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:4]}"
 
     query = args.query
     if args.query_file:
         query = Path(args.query_file).read_text(encoding="utf-8")
     if not query:
-        sys.stderr.write("[!] --query or --query-file is required for start\n")
-        return 2
+        # Only echo an id the caller chose; a generated one was never saved.
+        return refuse("missing_query", "--query or --query-file is required for start", given_id)
 
     if state_path(chain_id).exists():
-        sys.stderr.write(
-            f"[!] chain_id={chain_id} already has a state file at {state_path(chain_id)}. "
-            f"Use 'status' to inspect or pass a different --chain-id.\n"
-        )
-        return 2
+        return refuse("chain_id_exists", (
+            f"chain_id={chain_id} already has a state file at {state_path(chain_id)}. "
+            f"Use 'status' to inspect or pass a different --chain-id."
+        ), chain_id)
 
     state = {
         "chain_id": chain_id,
@@ -389,17 +407,19 @@ def cmd_advance(args: argparse.Namespace) -> int:
     chain_def = load_chain_definition(state["chain_name"])
     phases = chain_def["phases"]
 
+    decision = "approve" if args.approve else "reject" if args.reject else "finish" if args.finish else ""
     if state.get("completed_at"):
         if args.finish or args.reject:
-            decision = "finish" if args.finish else "reject"
-            sys.stderr.write(f"[!] The chain has already finished; there is no gate to {decision}.\n")
-            return 2
+            return refuse("chain_finished", f"The chain has already finished; there is no gate to {decision}.",
+                          state["chain_id"])
         print(json.dumps(_summary_envelope(state), indent=2))
         return 0
 
-    if args.finish and not state.get("pending_hitl"):
-        sys.stderr.write("[!] --finish is only valid at a pending approval gate.\n")
-        return 2
+    if decision and not state.get("pending_hitl"):
+        # Mid-chain, a decision would otherwise fall through to the output-recording path:
+        # '--reject --phase-output X' recorded the phase as a success and carried on.
+        return refuse("no_pending_gate", f"--{decision} is only valid at a pending approval gate.",
+                      state["chain_id"])
 
     # Resolve HITL approval requests first. These do NOT carry phase output —
     # the gate's whole point is to pause between phases, not to record work.
@@ -462,10 +482,10 @@ def cmd_advance(args: argparse.Namespace) -> int:
 
     # Normal advance path: caller must supply --phase-output (or --phase-output-file).
     if not (args.phase_output or args.phase_output_file):
-        sys.stderr.write(
-            "[!] advance requires --phase-output / --phase-output-file (or --approve / --reject / --finish at an approval gate).\n"
-        )
-        return 2
+        return refuse("missing_phase_output", (
+            "advance requires --phase-output / --phase-output-file "
+            "(or --approve / --reject / --finish at an approval gate)."
+        ), state["chain_id"])
 
     # Record the just-finished phase's output
     just_finished_idx = state["current_phase_index"]

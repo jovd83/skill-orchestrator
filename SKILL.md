@@ -7,7 +7,7 @@ metadata:
   dispatcher-layer: execution
   dispatcher-lifecycle: active
   author: jovd83
-  version: "1.3.1"
+  version: "1.4.0"
   dispatcher-risk: medium
   dispatcher-writes-files: true
   dispatcher-capabilities: skill-execution, sequence-runner, phase-orchestration, chain-telemetry
@@ -17,7 +17,7 @@ metadata:
   dispatcher-preferred-model: claude-sonnet-4-6
 ---
 
-> **Author:** jovd83 | **Version:** 1.3.1 | **License:** MIT
+> **Author:** jovd83 | **Version:** 1.4.0 | **License:** MIT
 
 # Skill Orchestrator
 
@@ -52,6 +52,8 @@ python scripts/next_phase.py status  --chain-id <id>
 
 - A phase with `"on_phase_complete": "hitl"` returns `awaiting_approval: true`; the chain waits for `--approve`, `--reject` or `--finish`. A gate after the last phase holds the chain open too (`final_gate: true`); `--reject` halts it and the summary reports `halted`.
 - `--finish` ends the chain at a gate as a planned early finish and skips the remaining phases (logged as a success unless an earlier phase failed); the summary reports `finished_early`. Use it for planned early ends such as an audit-only run, and `--reject` for a real rejection, which counts as failed.
+- The three decisions are refused when no gate is pending. On a finished chain, `--approve` returns the summary again and `--reject` or `--finish` is refused.
+- A refused call (seven error codes, listed in `next_phase.py -h`) exits with code 2 and prints a JSON object with `error` and `message` on stdout, so the envelope file you redirect into says why. When the envelope has an `error` field, stop and report it. Argparse usage errors and unreadable input files still leave stdout empty, so treat an empty envelope as a failure too.
 - `next_phase.py` records every outcome (`--failed`, `--skipped`) but does not enforce `mandatory` itself: the agent decides whether a failed phase ends the run. Mandatory-phase enforcement (step 5 below) is built into `orchestrate.py`.
 - A phase without a `skill` is agent-handled: the envelope has an empty `system_prompt` and `agent_handled: true`.
 - `--skipped` records a not-applicable phase without counting it as a failure.

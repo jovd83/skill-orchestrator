@@ -107,6 +107,7 @@ class NextPhaseFinishAtGate(unittest.TestCase):
         for flag in ("--finish", "--reject"):
             result = self.run_np("advance", "--chain-id", "a3", flag, expect_rc=2)
             self.assertIn("already finished", result.stderr)
+            self.assertEqual(json.loads(result.stdout)["error"], "chain_finished")
         summary = self.run_np("advance", "--chain-id", "a3", "--approve")  # harmless: returns the summary
         self.assertTrue(summary["done"])
 
@@ -116,10 +117,65 @@ class NextPhaseFinishAtGate(unittest.TestCase):
         for flag in ("--approve", "--reject", "--finish", "final_gate"):
             self.assertIn(flag, result.stdout)
 
-    def test_finish_outside_a_gate_is_refused(self):
+    def test_gate_decisions_outside_a_gate_are_refused(self):
         self.run_np("start", "--chain", "audit-chain", "--query", "x", "--chain-id", "a2")
-        result = self.run_np("advance", "--chain-id", "a2", "--finish", expect_rc=2)
-        self.assertIn("only valid at a pending approval gate", result.stderr)
+        for flag in ("--finish", "--reject", "--approve"):
+            # With a phase output the decision used to fall through and record the phase as a success.
+            result = self.run_np("advance", "--chain-id", "a2", flag, "--phase-output", "work", expect_rc=2)
+            self.assertIn("only valid at a pending approval gate", result.stderr)
+            error = json.loads(result.stdout)
+            self.assertEqual(error["error"], "no_pending_gate")
+            self.assertEqual(error["chain_id"], "a2")
+        status = self.run_np("status", "--chain-id", "a2")
+        self.assertEqual(status["current_phase_index"], 0)
+        self.assertEqual(status["phases_executed"], 0)
+        self.assertEqual(status["history"], [])
+
+
+class NextPhaseRefusals(unittest.TestCase):
+    """Every refusal exits 2 and prints a JSON error object, so a redirected envelope file is never empty."""
+
+    def setUp(self):
+        self.home = Path(tempfile.mkdtemp())
+        chain_dir = self.home / ".agents" / "skills" / "demo-chain" / "config"
+        chain_dir.mkdir(parents=True)
+        (chain_dir / "chain_definition.json").write_text(json.dumps({
+            "chain_name": "demo-chain",
+            "phases": [{"id": "only", "name": "Only", "intent": "work"}],
+        }), encoding="utf-8")
+        self.env = {**os.environ, "HOME": str(self.home), "USERPROFILE": str(self.home)}
+        self.env.pop("SKILL_DISPATCH_CHAIN_ID", None)
+
+    def refused(self, *args):
+        result = subprocess.run([sys.executable, str(SCRIPT), *args], capture_output=True, text=True,
+                                encoding="utf-8", env=self.env)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        error = json.loads(result.stdout)
+        self.assertIn(error["message"], result.stderr)
+        return error
+
+    def test_error_codes(self):
+        cases = [
+            (("advance", "--chain-id", "nope", "--phase-output", "x"), "no_chain_state"),
+            (("status", "--chain-id", "nope"), "no_chain_state"),
+            (("start", "--chain", "missing-chain", "--query", "x"), "no_chain_definition"),
+            (("start", "--chain", "demo-chain", "--chain-id", "r1"), "missing_query"),
+        ]
+        for args, code in cases:
+            with self.subTest(code=code, args=args):
+                self.assertEqual(self.refused(*args)["error"], code)
+
+    def test_missing_query_echoes_only_a_chosen_chain_id(self):
+        self.assertEqual(self.refused("start", "--chain", "demo-chain", "--chain-id", "r1")["chain_id"], "r1")
+        self.assertNotIn("chain_id", self.refused("start", "--chain", "demo-chain"))  # generated, never saved
+
+    def test_error_codes_on_a_running_chain(self):
+        start = subprocess.run([sys.executable, str(SCRIPT), "start", "--chain", "demo-chain", "--query", "x",
+                                "--chain-id", "r2"], capture_output=True, text=True, encoding="utf-8", env=self.env)
+        self.assertEqual(start.returncode, 0, start.stderr)
+        again = self.refused("start", "--chain", "demo-chain", "--query", "x", "--chain-id", "r2")
+        self.assertEqual((again["error"], again["chain_id"]), ("chain_id_exists", "r2"))
+        self.assertEqual(self.refused("advance", "--chain-id", "r2")["error"], "missing_phase_output")
 
 
 if __name__ == "__main__":
