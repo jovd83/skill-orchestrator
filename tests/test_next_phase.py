@@ -100,6 +100,22 @@ class NextPhaseFinishAtGate(unittest.TestCase):
         self.assertFalse(status["pending_hitl"])
         self.assertEqual(status["finished_early"], "audit-only run")
 
+    def test_gate_decisions_on_a_finished_chain(self):
+        self.run_np("start", "--chain", "audit-chain", "--query", "x", "--chain-id", "a3")
+        self.run_np("advance", "--chain-id", "a3", "--phase-output", "audit report")
+        self.run_np("advance", "--chain-id", "a3", "--finish", "--reason", "audit-only run")
+        for flag in ("--finish", "--reject"):
+            result = self.run_np("advance", "--chain-id", "a3", flag, expect_rc=2)
+            self.assertIn("already finished", result.stderr)
+        summary = self.run_np("advance", "--chain-id", "a3", "--approve")  # harmless: returns the summary
+        self.assertTrue(summary["done"])
+
+    def test_help_lists_the_gate_decisions(self):
+        result = subprocess.run([sys.executable, str(SCRIPT), "-h"], capture_output=True, text=True,
+                                encoding="utf-8", errors="replace", env=self.env)  # console code page on Windows
+        for flag in ("--approve", "--reject", "--finish", "final_gate"):
+            self.assertIn(flag, result.stdout)
+
     def test_finish_outside_a_gate_is_refused(self):
         self.run_np("start", "--chain", "audit-chain", "--query", "x", "--chain-id", "a2")
         result = self.run_np("advance", "--chain-id", "a2", "--finish", expect_rc=2)

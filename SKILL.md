@@ -7,7 +7,7 @@ metadata:
   dispatcher-layer: execution
   dispatcher-lifecycle: active
   author: jovd83
-  version: "1.3.0"
+  version: "1.3.1"
   dispatcher-risk: medium
   dispatcher-writes-files: true
   dispatcher-capabilities: skill-execution, sequence-runner, phase-orchestration, chain-telemetry
@@ -17,7 +17,7 @@ metadata:
   dispatcher-preferred-model: claude-sonnet-4-6
 ---
 
-> **Author:** jovd83 | **Version:** 1.3.0 | **License:** MIT
+> **Author:** jovd83 | **Version:** 1.3.1 | **License:** MIT
 
 # Skill Orchestrator
 
@@ -46,7 +46,7 @@ Phase 0       Phase 1
 ```bash
 python scripts/next_phase.py start   --chain <chain-name> --query-file request.md --host claude-code
 python scripts/next_phase.py advance --chain-id <id> --phase-output-file output.md [--failed | --skipped]
-python scripts/next_phase.py advance --chain-id <id> --approve | --reject --reason "<why>" | --finish --reason "<why>"
+python scripts/next_phase.py advance --chain-id <id> --approve | --reject [--reason "<why>"] | --finish [--reason "<why>"]
 python scripts/next_phase.py status  --chain-id <id>
 ```
 

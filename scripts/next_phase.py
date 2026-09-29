@@ -11,7 +11,7 @@ Result: chain execution bills to the host's subscription, not to ANTHROPIC_API_K
 Commands:
     next_phase.py start    --chain <chain_name> --query <text> [--chain-id <id>]
     next_phase.py advance  --chain-id <id> [--phase-output <text>] [--failed | --skipped]
-    next_phase.py advance  --chain-id <id> --approve | --reject --reason <text> | --finish --reason <text>
+    next_phase.py advance  --chain-id <id> --approve | --reject [--reason <text>] | --finish [--reason <text>]
     next_phase.py status   --chain-id <id>
 
 Envelope returned by start/advance is JSON on stdout:
@@ -390,6 +390,10 @@ def cmd_advance(args: argparse.Namespace) -> int:
     phases = chain_def["phases"]
 
     if state.get("completed_at"):
+        if args.finish or args.reject:
+            decision = "finish" if args.finish else "reject"
+            sys.stderr.write(f"[!] The chain has already finished; there is no gate to {decision}.\n")
+            return 2
         print(json.dumps(_summary_envelope(state), indent=2))
         return 0
 
@@ -459,7 +463,7 @@ def cmd_advance(args: argparse.Namespace) -> int:
     # Normal advance path: caller must supply --phase-output (or --phase-output-file).
     if not (args.phase_output or args.phase_output_file):
         sys.stderr.write(
-            "[!] advance requires --phase-output / --phase-output-file (or --approve/--reject for HITL gates).\n"
+            "[!] advance requires --phase-output / --phase-output-file (or --approve / --reject / --finish at an approval gate).\n"
         )
         return 2
 
@@ -576,7 +580,7 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="command", required=True)
 
     s = sub.add_parser("start", help="Begin a new chain run and emit Phase 1's envelope.")

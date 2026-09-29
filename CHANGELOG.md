@@ -5,12 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.1] - 2026-09-29
+
+### Fixed
+- `--finish` or `--reject` on a chain that has already finished is refused (exit code 2) instead of returning the summary as if it had worked. `--approve` still returns the summary.
+- `next_phase.py -h` prints the full module help, including the gate decisions and the final gate; it printed only the first line.
+- The usage lines show `--reason` as optional, which it is.
+- The error for a missing phase output names `--finish` next to `--approve` and `--reject`.
+
 ## [1.3.0] - 2026-09-29
 
 ### Added
 - `next_phase.py advance --finish --reason <text>`: at an approval gate, end the chain there as a success and skip the remaining phases. The summary and `status` report `finished_early`. It is the exit for planned early ends such as an audit-only `principal-audit-refactor` run, which used `--reject` and would now count as a failed chain. `--finish` outside a gate is refused. It is logged as a success unless an earlier phase failed.
 - `--approve`, `--reject` and `--finish` are mutually exclusive, and the gate's approval message lists all three.
-- `status` reports `halted` and `finished_early`; the module help describes the gate decisions and the final gate.
+- `status` reports `halted` and `finished_early`; the module docstring describes the gate decisions and the final gate.
 
 ## [1.2.0] - 2026-09-28
 

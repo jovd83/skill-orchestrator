@@ -1,6 +1,6 @@
 # skill-orchestrator
 
-[![version](https://img.shields.io/badge/version-1.3.0-blue)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-1.3.1-blue)](CHANGELOG.md)
 [![status](https://img.shields.io/badge/status-stable--beta-f0ad4e)](SKILL.md)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-ffdd00?style=flat&logo=buy-me-a-coffee&logoColor=black)](https://buymeacoffee.com/jovd83)
