@@ -32,8 +32,9 @@ When a phase carries on_phase_complete=hitl and just completed, the next call
 returns "awaiting_approval": true and refuses to advance until a decision:
     --approve   continue with the next phase (or finish, after the last one)
     --reject    halt the chain; the summary reports "halted": "hitl_rejected" and it counts as failed
-    --finish    end the chain at the gate as a success, skipping the remaining phases; the summary
-                reports "finished_early": "<reason>" (used by audit-only runs)
+    --finish    end the chain at the gate as a planned early finish, skipping the remaining phases;
+                logged as a success unless an earlier phase failed; the summary reports
+                "finished_early": "<reason>" (used by audit-only runs)
 A gate after the last phase holds the chain open the same way; its envelope has "final_gate": true.
 """
 
@@ -428,7 +429,8 @@ def cmd_advance(args: argparse.Namespace) -> int:
             envelope = _gate_envelope(state, chain_def, (
                 "The previous phase requested human-in-the-loop approval before the chain proceeds. "
                 "Re-invoke 'next_phase.py advance --chain-id <id> --approve' to continue, "
-                "or '--reject --reason <text>' to halt."
+                "'--reject --reason <text>' to halt as failed, or '--finish --reason <text>' to end the "
+                "chain here as a planned early finish."
             ))
             print(json.dumps(envelope, indent=2))
             return 0
@@ -522,7 +524,8 @@ def cmd_advance(args: argparse.Namespace) -> int:
             f"Phase {just_finished_idx + 1} ({prev_name}) completed and is marked for "
             f"human-in-the-loop review before the chain continues or finishes. Re-invoke "
             f"'next_phase.py advance --chain-id {state['chain_id']} --approve' to continue, "
-            f"or '--reject --reason <text>' to halt."
+            f"'--reject --reason <text>' to halt as failed, or '--finish --reason <text>' to end the "
+            f"chain here as a planned early finish."
         ))
         print(json.dumps(envelope, indent=2))
         return 0
@@ -598,14 +601,16 @@ def build_parser() -> argparse.ArgumentParser:
             "rendered grey on the wallboard."
         ),
     )
-    a.add_argument("--approve", action="store_true", help="Approve a pending HITL gate.")
-    a.add_argument("--reject", action="store_true", help="Reject a pending HITL gate and halt the chain (counts as failed).")
-    a.add_argument(
+    gate = a.add_mutually_exclusive_group()  # one decision per gate
+    gate.add_argument("--approve", action="store_true", help="Approve a pending HITL gate.")
+    gate.add_argument("--reject", action="store_true", help="Reject a pending HITL gate and halt the chain (counts as failed).")
+    gate.add_argument(
         "--finish",
         action="store_true",
         help=(
-            "At a pending HITL gate: end the chain there as a success, without running the remaining "
-            "phases (e.g. an audit-only run). Only valid at a gate."
+            "At a pending HITL gate: end the chain there as a planned early finish, without running the "
+            "remaining phases (e.g. an audit-only run). It is logged as a success unless an earlier phase "
+            "failed. Only valid at a gate."
         ),
     )
     a.add_argument("--reason", default="", help="Reason text for --reject or --finish.")

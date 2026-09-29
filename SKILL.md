@@ -50,8 +50,8 @@ python scripts/next_phase.py advance --chain-id <id> --approve | --reject --reas
 python scripts/next_phase.py status  --chain-id <id>
 ```
 
-- A phase with `"on_phase_complete": "hitl"` returns `awaiting_approval: true`; the chain waits for `--approve` or `--reject`. A gate after the last phase holds the chain open too (`final_gate: true`); `--reject` halts it and the summary reports `halted`.
-- `--finish` ends the chain at a gate as a success and skips the remaining phases; the summary reports `finished_early`. Use it for planned early ends such as an audit-only run, and `--reject` for a real rejection, which counts as failed.
+- A phase with `"on_phase_complete": "hitl"` returns `awaiting_approval: true`; the chain waits for `--approve`, `--reject` or `--finish`. A gate after the last phase holds the chain open too (`final_gate: true`); `--reject` halts it and the summary reports `halted`.
+- `--finish` ends the chain at a gate as a planned early finish and skips the remaining phases (logged as a success unless an earlier phase failed); the summary reports `finished_early`. Use it for planned early ends such as an audit-only run, and `--reject` for a real rejection, which counts as failed.
 - `next_phase.py` records every outcome (`--failed`, `--skipped`) but does not enforce `mandatory` itself: the agent decides whether a failed phase ends the run. Mandatory-phase enforcement (step 5 below) is built into `orchestrate.py`.
 - A phase without a `skill` is agent-handled: the envelope has an empty `system_prompt` and `agent_handled: true`.
 - `--skipped` records a not-applicable phase without counting it as a failure.
