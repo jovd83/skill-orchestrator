@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-09-29
+
+### Added
+- `next_phase.py advance --finish --reason <text>`: at an approval gate, end the chain there as a success and skip the remaining phases. The summary and `status` report `finished_early`. It is the exit for planned early ends such as an audit-only `principal-audit-refactor` run, which used `--reject` and would now count as a failed chain. `--finish` outside a gate is refused.
+- `status` reports `halted` and `finished_early`; the module help describes the gate decisions and the final gate.
+
 ## [1.2.0] - 2026-09-28
 
 ### Added

@@ -63,5 +63,48 @@ class NextPhaseFinalGate(unittest.TestCase):
         self.assertEqual(summary["phases_failed"], 0)
 
 
+class NextPhaseFinishAtGate(unittest.TestCase):
+    """--finish ends a chain at an approval gate as a success (the audit-only exit)."""
+
+    def setUp(self):
+        self.home = Path(tempfile.mkdtemp())
+        chain_dir = self.home / ".agents" / "skills" / "audit-chain" / "config"
+        chain_dir.mkdir(parents=True)
+        (chain_dir / "chain_definition.json").write_text(json.dumps({
+            "chain_name": "audit-chain",
+            "phases": [
+                {"id": "audit", "name": "Audit", "intent": "audit", "on_phase_complete": "hitl"},
+                {"id": "refactor", "name": "Refactor", "intent": "refactor"},
+            ],
+        }), encoding="utf-8")
+        self.env = {**os.environ, "HOME": str(self.home), "USERPROFILE": str(self.home)}
+        self.env.pop("SKILL_DISPATCH_CHAIN_ID", None)
+
+    def run_np(self, *args, expect_rc=0):
+        result = subprocess.run([sys.executable, str(SCRIPT), *args], capture_output=True, text=True,
+                                encoding="utf-8", env=self.env)
+        self.assertEqual(result.returncode, expect_rc, result.stderr)
+        return json.loads(result.stdout) if expect_rc == 0 else result
+
+    def test_finish_at_gate_ends_the_chain_as_success(self):
+        self.run_np("start", "--chain", "audit-chain", "--query", "x", "--chain-id", "a1")
+        gate = self.run_np("advance", "--chain-id", "a1", "--phase-output", "audit report")
+        self.assertTrue(gate["awaiting_approval"])
+        summary = self.run_np("advance", "--chain-id", "a1", "--finish", "--reason", "audit-only run")
+        self.assertTrue(summary["done"])
+        self.assertEqual(summary["finished_early"], "audit-only run")
+        self.assertEqual(summary["halted"], "")
+        self.assertEqual(summary["phases_executed"], 1)
+        self.assertEqual(summary["phases_failed"], 0)
+        status = self.run_np("status", "--chain-id", "a1")
+        self.assertFalse(status["pending_hitl"])
+        self.assertEqual(status["finished_early"], "audit-only run")
+
+    def test_finish_outside_a_gate_is_refused(self):
+        self.run_np("start", "--chain", "audit-chain", "--query", "x", "--chain-id", "a2")
+        result = self.run_np("advance", "--chain-id", "a2", "--finish", expect_rc=2)
+        self.assertIn("only valid at a pending approval gate", result.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

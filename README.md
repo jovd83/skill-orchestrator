@@ -1,6 +1,6 @@
 # skill-orchestrator
 
-[![version](https://img.shields.io/badge/version-1.2.0-blue)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-1.3.0-blue)](CHANGELOG.md)
 [![status](https://img.shields.io/badge/status-stable--beta-f0ad4e)](SKILL.md)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-ffdd00?style=flat&logo=buy-me-a-coffee&logoColor=black)](https://buymeacoffee.com/jovd83)
@@ -131,7 +131,7 @@ python scripts/next_phase.py advance --chain-id <id> --approve        # at an ap
 python scripts/next_phase.py status  --chain-id <id>
 ```
 
-Approval gates come from `"on_phase_complete": "hitl"` in `chain_definition.json`. `--failed` and `--skipped` mark the phase that just ran; `--reject --reason` halts the chain. Run state is kept in `~/.agents/dispatcher-data/chain_runs/`.
+Approval gates come from `"on_phase_complete": "hitl"` in `chain_definition.json`. `--failed` and `--skipped` mark the phase that just ran. At a gate, `--approve` continues, `--reject --reason` halts the chain as failed, and `--finish --reason` ends it there as a success (an audit-only run, for example). Run state is kept in `~/.agents/dispatcher-data/chain_runs/`.
 
 ## Repository structure
 

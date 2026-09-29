@@ -10,7 +10,8 @@ Result: chain execution bills to the host's subscription, not to ANTHROPIC_API_K
 
 Commands:
     next_phase.py start    --chain <chain_name> --query <text> [--chain-id <id>]
-    next_phase.py advance  --chain-id <id> [--phase-output <text>] [--approve] [--reject --reason <text>]
+    next_phase.py advance  --chain-id <id> [--phase-output <text>] [--failed | --skipped]
+    next_phase.py advance  --chain-id <id> --approve | --reject --reason <text> | --finish --reason <text>
     next_phase.py status   --chain-id <id>
 
 Envelope returned by start/advance is JSON on stdout:
@@ -28,7 +29,12 @@ Envelope returned by start/advance is JSON on stdout:
 
 When the chain is finished, returned envelope has "done": true and a summary.
 When a phase carries on_phase_complete=hitl and just completed, the next call
-returns "awaiting_approval": true and refuses to advance until --approve.
+returns "awaiting_approval": true and refuses to advance until a decision:
+    --approve   continue with the next phase (or finish, after the last one)
+    --reject    halt the chain; the summary reports "halted": "hitl_rejected" and it counts as failed
+    --finish    end the chain at the gate as a success, skipping the remaining phases; the summary
+                reports "finished_early": "<reason>" (used by audit-only runs)
+A gate after the last phase holds the chain open the same way; its envelope has "final_gate": true.
 """
 
 from __future__ import annotations
@@ -282,6 +288,7 @@ def finalize_chain(state: dict[str, Any], _chain_def: dict[str, Any]) -> dict[st
             f"duration_s={duration_s} "
             f"host_driven=true"
             + (f" halted={state['halted']}" if state.get("halted") else "")
+            + (f" finished_early={state['finished_early']}" if state.get("finished_early") else "")
         ),
         chain_id=state["chain_id"],
         phase_status="success" if state["phases_failed"] == 0 and not state.get("halted") else "failed",
@@ -313,6 +320,7 @@ def _summary_envelope(state: dict[str, Any]) -> dict[str, Any]:
         "phases_executed": state["phases_executed"],
         "phases_failed": state["phases_failed"],
         "halted": state.get("halted", ""),
+        "finished_early": state.get("finished_early", ""),
         "duration_s": state.get("duration_s"),
         "completed_at": state.get("completed_at"),
         "state_path": str(state_path(state["chain_id"])),
@@ -384,9 +392,26 @@ def cmd_advance(args: argparse.Namespace) -> int:
         print(json.dumps(_summary_envelope(state), indent=2))
         return 0
 
+    if args.finish and not state.get("pending_hitl"):
+        sys.stderr.write("[!] --finish is only valid at a pending approval gate.\n")
+        return 2
+
     # Resolve HITL approval requests first. These do NOT carry phase output —
     # the gate's whole point is to pause between phases, not to record work.
     if state.get("pending_hitl"):
+        if args.finish:
+            # A planned early end (e.g. an audit-only run): the chain stops at the gate as a success.
+            reason = args.reason or "finished_at_gate"
+            state["pending_hitl"] = False
+            state["finished_early"] = reason
+            state["current_phase_index"] = len(phases)
+            save_state(state)
+            log_event(
+                decision="SEQUENCE", skill=state["chain_name"], intent="chain_finished_early",
+                reason=f"finished_at_gate reason={reason}", chain_id=state["chain_id"],
+            )
+            print(json.dumps(finalize_chain(state, chain_def), indent=2))
+            return 0
         if args.reject:
             reason = args.reason or "rejected_by_host"
             state["pending_hitl"] = False
@@ -539,6 +564,8 @@ def cmd_status(args: argparse.Namespace) -> int:
         "phases_failed": state["phases_failed"],
         "total_output_chars": state.get("total_output_chars", 0),
         "pending_hitl": state.get("pending_hitl", False),
+        "halted": state.get("halted", ""),
+        "finished_early": state.get("finished_early", ""),
         "history": state.get("history", []),
         "state_path": str(state_path(state["chain_id"])),
     }, indent=2))
@@ -572,8 +599,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     a.add_argument("--approve", action="store_true", help="Approve a pending HITL gate.")
-    a.add_argument("--reject", action="store_true", help="Reject a pending HITL gate and halt the chain.")
-    a.add_argument("--reason", default="", help="Reason text for --reject.")
+    a.add_argument("--reject", action="store_true", help="Reject a pending HITL gate and halt the chain (counts as failed).")
+    a.add_argument(
+        "--finish",
+        action="store_true",
+        help=(
+            "At a pending HITL gate: end the chain there as a success, without running the remaining "
+            "phases (e.g. an audit-only run). Only valid at a gate."
+        ),
+    )
+    a.add_argument("--reason", default="", help="Reason text for --reject or --finish.")
     a.set_defaults(func=cmd_advance)
 
     st = sub.add_parser("status", help="Inspect chain run state.")
